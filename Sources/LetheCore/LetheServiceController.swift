@@ -15,6 +15,7 @@ public enum LetheServiceControllerError: Error, LocalizedError {
 }
 
 public final class LetheServiceController {
+    private let launchAgentLabel = "com.lethe.agent"
     private let paths: LethePaths
     private let fileManager: FileManager
 
@@ -25,12 +26,23 @@ public final class LetheServiceController {
 
     @discardableResult
     public func start() throws -> ShellCommandResult {
-        try runLaunchctl(arguments: ["load", paths.launchAgentPlist.path])
+        let loadResult = try runLaunchctl(
+            arguments: ["load", paths.launchAgentPlist.path],
+            toleratedErrors: ["already loaded"]
+        )
+        _ = try? runLaunchctl(
+            arguments: ["kickstart", "-k", launchctlDomainTarget],
+            toleratedErrors: ["Could not find service", "No such process"]
+        )
+        return loadResult
     }
 
     @discardableResult
     public func stop() throws -> ShellCommandResult {
-        try runLaunchctl(arguments: ["unload", paths.launchAgentPlist.path])
+        try runLaunchctl(
+            arguments: ["unload", paths.launchAgentPlist.path],
+            toleratedErrors: ["Could not find service", "No such process", "not loaded"]
+        )
     }
 
     @discardableResult
@@ -39,7 +51,14 @@ public final class LetheServiceController {
         return try start()
     }
 
-    private func runLaunchctl(arguments: [String]) throws -> ShellCommandResult {
+    private var launchctlDomainTarget: String {
+        "gui/\(getuid())/\(launchAgentLabel)"
+    }
+
+    private func runLaunchctl(
+        arguments: [String],
+        toleratedErrors: [String] = []
+    ) throws -> ShellCommandResult {
         guard fileManager.fileExists(atPath: paths.launchAgentPlist.path) else {
             throw LetheServiceControllerError.launchAgentMissing(paths.launchAgentPlist)
         }
@@ -50,10 +69,13 @@ public final class LetheServiceController {
             captureOutput: true
         )
 
+        let output = [result.stderr, result.stdout].first(where: { !$0.isEmpty }) ?? ""
         guard result.terminationStatus == 0 else {
-            throw LetheServiceControllerError.commandFailed(
-                [result.stderr, result.stdout].first(where: { !$0.isEmpty }) ?? "exit \(result.terminationStatus)"
-            )
+            let lowercasedOutput = output.lowercased()
+            if toleratedErrors.contains(where: { lowercasedOutput.contains($0.lowercased()) }) {
+                return result
+            }
+            throw LetheServiceControllerError.commandFailed(output.isEmpty ? "exit \(result.terminationStatus)" : output)
         }
 
         return result

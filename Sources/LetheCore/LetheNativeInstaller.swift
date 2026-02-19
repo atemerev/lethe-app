@@ -21,6 +21,8 @@ public struct LetheInstallResult {
 }
 
 public final class LetheNativeInstaller: @unchecked Sendable {
+    public typealias InstallProgressHandler = (String) -> Void
+
     private struct ToolDependency {
         let command: String
         let brewPackage: String
@@ -35,13 +37,23 @@ public final class LetheNativeInstaller: @unchecked Sendable {
         self.fileManager = fileManager
     }
 
-    public func install(config: LetheInstallConfiguration) throws -> LetheInstallResult {
-        try ensureDependencies()
-        try cloneOrUpdateRepository()
-        try ensureRuntimeDependencies()
+    public func install(
+        config: LetheInstallConfiguration,
+        progress: InstallProgressHandler? = nil
+    ) throws -> LetheInstallResult {
+        progress?("Checking required tools.")
+        try ensureDependencies(progress: progress)
+        progress?("Preparing Lethe checkout in \(paths.installDirectory.path).")
+        try cloneOrUpdateRepository(progress: progress)
+        progress?("Ensuring runtime dependencies (agent-browser and browser deps).")
+        try ensureRuntimeDependencies(progress: progress)
+        progress?("Writing configuration file.")
         let envFile = try writeEnvironment(config: config)
+        progress?("Installing Python dependencies with uv.")
         try installPythonDependencies()
+        progress?("Installing and loading launch agent.")
         try setupLaunchAgent()
+        progress?("Installation finished.")
 
         return LetheInstallResult(
             installDirectory: paths.installDirectory,
@@ -65,7 +77,7 @@ public final class LetheNativeInstaller: @unchecked Sendable {
         }
     }
 
-    private func ensureDependencies() throws {
+    private func ensureDependencies(progress: InstallProgressHandler?) throws {
         let dependencies = [
             ToolDependency(command: "git", brewPackage: "git"),
             ToolDependency(command: "uv", brewPackage: "uv"),
@@ -74,14 +86,18 @@ public final class LetheNativeInstaller: @unchecked Sendable {
 
         for dependency in dependencies {
             if commandExists(dependency.command) {
+                progress?("Found dependency: \(dependency.command).")
                 continue
             }
+            progress?("Installing missing dependency with Homebrew: \(dependency.brewPackage).")
             try installDependencyWithHomebrew(dependency)
+            progress?("Installed dependency: \(dependency.command).")
         }
     }
 
-    private func ensureRuntimeDependencies() throws {
+    private func ensureRuntimeDependencies(progress: InstallProgressHandler?) throws {
         if !commandExists("agent-browser") {
+            progress?("Installing agent-browser globally with npm.")
             _ = try runChecked(
                 executable: "/usr/bin/env",
                 arguments: ["npm", "install", "-g", "agent-browser"]
@@ -91,16 +107,19 @@ public final class LetheNativeInstaller: @unchecked Sendable {
                     "Installed agent-browser, but command is still unavailable in PATH."
                 )
             }
+            progress?("agent-browser installed.")
         }
 
+        progress?("Running: agent-browser install --with-deps.")
         _ = try runChecked(
             executable: "/usr/bin/env",
             arguments: ["agent-browser", "install", "--with-deps"]
         )
     }
 
-    private func cloneOrUpdateRepository() throws {
+    private func cloneOrUpdateRepository(progress: InstallProgressHandler?) throws {
         if fileManager.fileExists(atPath: paths.installDirectory.appending(path: ".git").path) {
+            progress?("Existing checkout found, fetching updates.")
             _ = try runChecked(
                 executable: "/usr/bin/env",
                 arguments: ["git", "-C", paths.installDirectory.path, "fetch", "origin", "--tags"]
@@ -114,6 +133,7 @@ public final class LetheNativeInstaller: @unchecked Sendable {
                 arguments: ["git", "-C", paths.installDirectory.path, "pull", "origin", "main"]
             )
         } else {
+            progress?("Cloning Lethe repository.")
             try fileManager.createDirectory(
                 at: paths.installDirectory.deletingLastPathComponent(),
                 withIntermediateDirectories: true,
@@ -161,6 +181,10 @@ public final class LetheNativeInstaller: @unchecked Sendable {
         lines.append("")
         lines.append("HEARTBEAT_ENABLED=true")
         lines.append("HIPPOCAMPUS_ENABLED=true")
+        lines.append("")
+        lines.append("# Web Console")
+        lines.append("LETHE_CONSOLE=true")
+        lines.append("LETHE_CONSOLE_PORT=8777")
 
         try lines.joined(separator: "\n").write(to: envFile, atomically: true, encoding: .utf8)
 

@@ -31,7 +31,7 @@ enum InstallWizard {
 }
 
 @MainActor
-private final class InstallWizardWindowController: NSWindowController, NSWindowDelegate {
+private final class InstallWizardWindowController: NSWindowController, NSWindowDelegate, NSTabViewDelegate {
     private let defaults: InstallWizardDefaults
     private let completion: (LetheInstallConfiguration?) -> Void
     private var finished = false
@@ -55,6 +55,7 @@ private final class InstallWizardWindowController: NSWindowController, NSWindowD
 
     private let telegramBotTokenField = NSTextField(string: "")
     private let telegramUserIDField = NSTextField(string: "")
+    private let continueButton = NSButton(title: "Install", target: nil, action: nil)
 
     private let anthropicMainDefault = "claude-opus-4-6"
     private let anthropicAuxDefault = "claude-haiku-4-5-20251001"
@@ -83,11 +84,17 @@ private final class InstallWizardWindowController: NSWindowController, NSWindowD
         buildUI()
         populateDefaults()
         updateAnthropicAuthUI()
+        setupValidationObservers()
+        updateInstallButtonState()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     func present() {
@@ -134,6 +141,7 @@ private final class InstallWizardWindowController: NSWindowController, NSWindowD
 
         tabView.translatesAutoresizingMaskIntoConstraints = false
         tabView.tabViewType = .topTabsBezelBorder
+        tabView.delegate = self
         root.addArrangedSubview(tabView)
         tabView.heightAnchor.constraint(greaterThanOrEqualToConstant: 320).isActive = true
 
@@ -157,7 +165,8 @@ private final class InstallWizardWindowController: NSWindowController, NSWindowD
         spacer.translatesAutoresizingMaskIntoConstraints = false
         let cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancelPressed))
         cancelButton.bezelStyle = .rounded
-        let continueButton = NSButton(title: "Install", target: self, action: #selector(continuePressed))
+        continueButton.target = self
+        continueButton.action = #selector(continuePressed)
         continueButton.bezelStyle = .rounded
         continueButton.keyEquivalent = "\r"
 
@@ -356,6 +365,73 @@ private final class InstallWizardWindowController: NSWindowController, NSWindowD
             anthropicMainModelField.isEnabled = true
             anthropicAuxModelField.isEnabled = true
             anthropicModelHintLabel.stringValue = "API key mode: you can edit main and aux model values."
+        }
+        updateInstallButtonState()
+    }
+
+    func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        _ = tabView
+        _ = tabViewItem
+        updateInstallButtonState()
+    }
+
+    private func setupValidationObservers() {
+        let fields = [
+            openRouterKeyField,
+            openRouterMainModelField,
+            openRouterAuxModelField,
+            anthropicCredentialField,
+            anthropicMainModelField,
+            anthropicAuxModelField,
+            openAIKeyField,
+            openAIMainModelField,
+            openAIAuxModelField,
+            telegramBotTokenField,
+            telegramUserIDField,
+        ]
+        for field in fields {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(textFieldChanged(_:)),
+                name: NSControl.textDidChangeNotification,
+                object: field
+            )
+        }
+    }
+
+    @objc private func textFieldChanged(_ notification: Notification) {
+        _ = notification
+        updateInstallButtonState()
+    }
+
+    private func updateInstallButtonState() {
+        continueButton.isEnabled = isConfigurationInputComplete()
+    }
+
+    private func isConfigurationInputComplete() -> Bool {
+        func trimmed(_ field: NSTextField) -> String {
+            field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        guard !trimmed(telegramBotTokenField).isEmpty else { return false }
+        guard !trimmed(telegramUserIDField).isEmpty else { return false }
+
+        switch selectedProvider() {
+        case .openrouter:
+            return !trimmed(openRouterKeyField).isEmpty
+                && !trimmed(openRouterMainModelField).isEmpty
+                && !trimmed(openRouterAuxModelField).isEmpty
+        case .anthropic:
+            guard !trimmed(anthropicCredentialField).isEmpty else { return false }
+            if selectedAnthropicAuthMode() == .subscriptionToken {
+                return true
+            }
+            return !trimmed(anthropicMainModelField).isEmpty
+                && !trimmed(anthropicAuxModelField).isEmpty
+        case .openai:
+            return !trimmed(openAIKeyField).isEmpty
+                && !trimmed(openAIMainModelField).isEmpty
+                && !trimmed(openAIAuxModelField).isEmpty
         }
     }
 
